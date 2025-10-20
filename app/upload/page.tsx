@@ -27,12 +27,15 @@ import {
   Tag,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { useActiveAccount } from "thirdweb/react"
 import { validateGitHubUrl } from "@/lib/github-service"
 import { calculatePayment } from "@/lib/payment-service"
 import { MintResultDisplay } from "@/components/MintResultDisplay"
+import { createAuditRequestContractsClient } from "@/lib/client-wallet-minting"
 
 export default function UploadPage() {
   const router = useRouter()
+  const account = useActiveAccount()
   const [step, setStep] = useState(1)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -146,7 +149,7 @@ export default function UploadPage() {
   }
 
   const handleSubmit = async () => {
-    if (!walletAddress) {
+    if (!account) {
       alert("Please connect your wallet first")
       return
     }
@@ -163,8 +166,39 @@ export default function UploadPage() {
       setUploadProgress(25)
       await new Promise((resolve) => setTimeout(resolve, 500))
 
-      // Submit audit request with NFT minting
+      // Generate repository hash
+      const repoHash = `${githubUrl}_${Date.now()}`
+
+      // Generate project tags
+      const tags = generateTags(repoAnalysis, aiEstimation)
+
+      // Create audit request data
+      const auditData = {
+        projectName,
+        githubUrl,
+        repoHash,
+        complexity: aiEstimation.complexity,
+        estimatedDuration: userDuration,
+        proposedPrice: userPrice,
+        auditorCount: auditorMembers.toString(),
+        developerWallet: account.address,
+        tags,
+        description: projectDescription,
+      }
+
+      // Deploy contracts and mint NFT using connected wallet
       setUploadProgress(40)
+      console.log("[v0] Creating contracts with connected wallet:", account.address)
+      const contractResult = await createAuditRequestContractsClient(auditData, account)
+
+      if (!contractResult.success) {
+        throw new Error(contractResult.error || "Failed to create contracts")
+      }
+
+      console.log("[v0] Contracts created successfully:", contractResult)
+
+      // Save to database via API
+      setUploadProgress(70)
       const response = await fetch("/api/submit-audit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -176,9 +210,11 @@ export default function UploadPage() {
           estimatedDuration: Number.parseInt(userDuration),
           proposedPrice: Number.parseFloat(userPrice),
           auditorCount: auditorMembers,
-          developerWallet: walletAddress,
+          developerWallet: account.address,
           repoAnalysis,
           aiEstimation,
+          // Pass the contract results from client-side deployment
+          contractResult: contractResult,
         }),
       })
 
@@ -197,19 +233,21 @@ export default function UploadPage() {
       }
 
       const data = await response.json()
-      // </CHANGE>
-
       console.log("[v0] Audit submitted successfully:", data)
 
-      setUploadProgress(70)
+      setUploadProgress(90)
       await new Promise((resolve) => setTimeout(resolve, 500))
 
-      setContractResult(data.contracts)
-      setNftConfirmation(data.contracts.nftMint)
+      // Use the contract results from client-side deployment
+      setContractResult({
+        tokenContract: contractResult.tokenContract,
+        nftContract: contractResult.nftContract,
+        nftMint: contractResult.nftMintResult,
+      })
+      setNftConfirmation(contractResult.nftMintResult)
 
       setUploadProgress(100)
       await new Promise((resolve) => setTimeout(resolve, 1000))
-      // </CHANGE>
 
       setShowMintResult(true)
       setIsUploading(false)
@@ -229,7 +267,7 @@ export default function UploadPage() {
 
   const canProceedToStep2 = projectName && projectDescription && githubUrl && aiEstimation
   const canProceedToStep3 = userPrice && userDuration && auditorMembers >= 1
-  const canSubmit = acceptNDA && acceptTerms && walletAddress
+  const canSubmit = acceptNDA && acceptTerms && account
 
   const paymentDetails = aiEstimation
     ? calculatePayment(Number.parseFloat(userPrice || aiEstimation.price), auditorMembers)
@@ -644,17 +682,37 @@ export default function UploadPage() {
                   Wallet Connection
                 </h3>
                 <div className="space-y-3">
-                  <Label htmlFor="walletAddress">Your Wallet Address</Label>
-                  <Input
-                    id="walletAddress"
-                    placeholder="0x..."
-                    value={walletAddress}
-                    onChange={(e) => setWalletAddress(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    <Info className="w-3 h-3 inline mr-1" />
-                    This wallet will receive the Audit Request NFT and be used for payments
-                  </p>
+                  {account ? (
+                    <div className="space-y-2">
+                      <Label>Connected Wallet</Label>
+                      <div className="p-3 bg-success/10 border border-success/30 rounded-lg">
+                        <div className="flex items-center gap-2 text-success font-medium">
+                          <CheckCircle className="w-4 h-4" />
+                          Wallet Connected
+                        </div>
+                        <div className="text-sm font-mono mt-1 break-all">
+                          {account.address}
+                        </div>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        <Info className="w-3 h-3 inline mr-1" />
+                        This wallet will receive the Audit Request NFT and be used for payments
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <Label>Wallet Connection Required</Label>
+                      <div className="p-3 bg-warning/10 border border-warning/30 rounded-lg">
+                        <div className="flex items-center gap-2 text-warning font-medium">
+                          <AlertCircle className="w-4 h-4" />
+                          Please connect your wallet
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          You need to connect your wallet to submit an audit request
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 

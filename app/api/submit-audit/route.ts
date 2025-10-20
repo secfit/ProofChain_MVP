@@ -42,6 +42,7 @@ export async function POST(request: NextRequest) {
       developerWallet,
       repoAnalysis,
       aiEstimation,
+      contractResult, // Client-side contract deployment results
     } = body
 
     if (!projectName || !githubUrl || !developerWallet) {
@@ -61,32 +62,40 @@ export async function POST(request: NextRequest) {
     // Generate project tags
     const tags = generateProjectTags(repoAnalysis, aiEstimation)
 
-    // Step 1: Create dynamic contracts and mint NFT
-    console.log("[v0] Step 1: Creating dynamic contracts and minting NFT...")
+    // Step 1: Use client-side contract results or create new ones
+    console.log("[v0] Step 1: Processing contract deployment...")
 
-    const auditData: AuditRequestData = {
-      projectName,
-      githubUrl,
-      repoHash,
-      complexity,
-      estimatedDuration: estimatedDuration.toString(),
-      proposedPrice: proposedPrice.toString(),
-      auditorCount: auditorCount.toString(),
-      developerWallet,
-      tags,
-      description: projectDescription,
-    }
-
-    let contractResult
-    try {
-      contractResult = await createRealAuditRequestContracts(auditData)
-
-      if (!contractResult.success) {
-        throw new Error(contractResult.error || "Failed to create contracts")
+    let finalContractResult
+    if (contractResult && contractResult.success) {
+      // Use client-side deployed contracts
+      console.log("[v0] Using client-side deployed contracts")
+      finalContractResult = contractResult
+    } else {
+      // Fallback to server-side deployment (for backward compatibility)
+      console.log("[v0] No client-side contracts provided, using server-side deployment")
+      const auditData: AuditRequestData = {
+        projectName,
+        githubUrl,
+        repoHash,
+        complexity,
+        estimatedDuration: estimatedDuration.toString(),
+        proposedPrice: proposedPrice.toString(),
+        auditorCount: auditorCount.toString(),
+        developerWallet,
+        tags,
+        description: projectDescription,
       }
-    } catch (error: any) {
-      console.error("[v0] Error creating contracts:", error)
-      return NextResponse.json({ error: `Contract creation failed: ${error.message}` }, { status: 500 })
+
+      try {
+        finalContractResult = await createRealAuditRequestContracts(auditData)
+
+        if (!finalContractResult.success) {
+          throw new Error(finalContractResult.error || "Failed to create contracts")
+        }
+      } catch (error: any) {
+        console.error("[v0] Error creating contracts:", error)
+        return NextResponse.json({ error: `Contract creation failed: ${error.message}` }, { status: 500 })
+      }
     }
 
     // Step 1.5: Create platform tokens (audit request and developer tokens)
@@ -103,10 +112,10 @@ export async function POST(request: NextRequest) {
       developerWallet,
       tags,
       description: projectDescription,
-      tokenContractAddress: contractResult.tokenContract!.address,
-      nftContractAddress: contractResult.nftContract!.address,
-      nftTokenId: contractResult.nftMintResult!.tokenId,
-      nftTransactionHash: contractResult.nftMintResult!.transactionHash,
+      tokenContractAddress: finalContractResult.tokenContract!.address,
+      nftContractAddress: finalContractResult.nftContract!.address,
+      nftTokenId: finalContractResult.nftMintResult!.tokenId,
+      nftTransactionHash: finalContractResult.nftMintResult!.transactionHash,
     }
 
     const developerTokenData: DeveloperTokenData = {
@@ -114,10 +123,10 @@ export async function POST(request: NextRequest) {
       projectName,
       githubUrl,
       repoHash,
-      tokenContractAddress: contractResult.tokenContract!.address,
-      nftContractAddress: contractResult.nftContract!.address,
-      nftTokenId: contractResult.nftMintResult!.tokenId,
-      nftTransactionHash: contractResult.nftMintResult!.transactionHash,
+      tokenContractAddress: finalContractResult.tokenContract!.address,
+      nftContractAddress: finalContractResult.nftContract!.address,
+      nftTokenId: finalContractResult.nftMintResult!.tokenId,
+      nftTransactionHash: finalContractResult.nftMintResult!.transactionHash,
       totalProjects: 1,
       totalSpent: Number.parseFloat(proposedPrice.toString()),
       reputation: 100,
@@ -154,9 +163,9 @@ export async function POST(request: NextRequest) {
       auditorCount,
       developerWallet,
       status: "Available",
-      requestNftId: contractResult.nftMintResult!.tokenId,
-      requestNftTxHash: contractResult.nftMintResult!.transactionHash,
-      paymentTxHash: contractResult.nftMintResult!.transactionHash,
+      requestNftId: finalContractResult.nftMintResult!.tokenId,
+      requestNftTxHash: finalContractResult.nftMintResult!.transactionHash,
+      paymentTxHash: finalContractResult.nftMintResult!.transactionHash,
       tags,
       createdAt: new Date().toISOString(),
     })
@@ -196,15 +205,15 @@ export async function POST(request: NextRequest) {
       console.log("[v0] ✅ Audit request saved to Supabase:", supabaseData.auditRequestId)
 
       // 2. Create smart contract records
-      if (contractResult.tokenContract) {
+      if (finalContractResult.tokenContract) {
         const tokenContractData: Omit<SmartContract, "id" | "created_at"> = {
           audit_request_id: supabaseData.auditRequestId,
-          contract_address: contractResult.tokenContract.address,
+          contract_address: finalContractResult.tokenContract.address,
           contract_type: "ERC20",
-          contract_name: contractResult.tokenContract.name,
-          contract_symbol: contractResult.tokenContract.symbol,
-          deployment_hash: contractResult.tokenContract.explorerUrl.split("/").pop() || "",
-          explorer_url: contractResult.tokenContract.explorerUrl,
+          contract_name: finalContractResult.tokenContract.name,
+          contract_symbol: finalContractResult.tokenContract.symbol,
+          deployment_hash: finalContractResult.tokenContract.explorerUrl.split("/").pop() || "",
+          explorer_url: finalContractResult.tokenContract.explorerUrl,
         }
 
         const tokenContractId = await supabaseAuditService.createSmartContract(tokenContractData)
@@ -212,15 +221,15 @@ export async function POST(request: NextRequest) {
         console.log("[v0] ✅ Token contract saved to Supabase:", tokenContractId)
       }
 
-      if (contractResult.nftContract) {
+      if (finalContractResult.nftContract) {
         const nftContractData: Omit<SmartContract, "id" | "created_at"> = {
           audit_request_id: supabaseData.auditRequestId,
-          contract_address: contractResult.nftContract.address,
+          contract_address: finalContractResult.nftContract.address,
           contract_type: "ERC721",
-          contract_name: contractResult.nftContract.name,
-          contract_symbol: contractResult.nftContract.symbol,
-          deployment_hash: contractResult.nftContract.explorerUrl.split("/").pop() || "",
-          explorer_url: contractResult.nftContract.explorerUrl,
+          contract_name: finalContractResult.nftContract.name,
+          contract_symbol: finalContractResult.nftContract.symbol,
+          deployment_hash: finalContractResult.nftContract.explorerUrl.split("/").pop() || "",
+          explorer_url: finalContractResult.nftContract.explorerUrl,
         }
 
         const nftContractId = await supabaseAuditService.createSmartContract(nftContractData)
@@ -229,17 +238,17 @@ export async function POST(request: NextRequest) {
       }
 
       // 3. Create NFT record
-      if (contractResult.nftMintResult) {
+      if (finalContractResult.nftMintResult) {
         const nftData: Omit<NFT, "id" | "created_at"> = {
           audit_request_id: supabaseData.auditRequestId,
           contract_id: supabaseData.contractIds[supabaseData.contractIds.length - 1],
-          token_id: contractResult.nftMintResult.tokenId,
+          token_id: finalContractResult.nftMintResult.tokenId,
           token_name: `Audit Request: ${projectName}`,
           token_description: `NFT representing audit request for ${projectName}`,
-          metadata_uri: contractResult.nftMintResult.metadataUri,
+          metadata_uri: finalContractResult.nftMintResult.metadataUri,
           owner_wallet: developerWallet,
-          mint_transaction_hash: contractResult.nftMintResult.transactionHash,
-          explorer_url: contractResult.nftMintResult.explorerUrl,
+          mint_transaction_hash: finalContractResult.nftMintResult.transactionHash,
+          explorer_url: finalContractResult.nftMintResult.explorerUrl,
         }
 
         const nftId = await supabaseAuditService.createNFT(nftData)
@@ -248,15 +257,15 @@ export async function POST(request: NextRequest) {
       }
 
       // 4. Create IPFS data record
-      if (contractResult.nftMintResult?.metadataUri) {
+      if (finalContractResult.nftMintResult?.metadataUri) {
         const ipfsData: Omit<IPFSData, "id" | "created_at"> = {
           audit_request_id: supabaseData.auditRequestId,
           nft_id: supabaseData.nftIds[0],
-          ipfs_hash: contractResult.nftMintResult.metadataUri.replace("ipfs://", ""),
-          ipfs_uri: contractResult.nftMintResult.metadataUri,
+          ipfs_hash: finalContractResult.nftMintResult.metadataUri.replace("ipfs://", ""),
+          ipfs_uri: finalContractResult.nftMintResult.metadataUri,
           content_type: "Metadata",
-          related_contract: contractResult.nftContract?.address,
-          related_token: contractResult.nftMintResult.tokenId,
+          related_contract: finalContractResult.nftContract?.address,
+          related_token: finalContractResult.nftMintResult.tokenId,
         }
 
         const ipfsId = await supabaseAuditService.createIPFSData(ipfsData)
@@ -290,9 +299,9 @@ export async function POST(request: NextRequest) {
       success: true,
       auditRequest,
       contracts: {
-        tokenContract: contractResult.tokenContract,
-        nftContract: contractResult.nftContract,
-        nftMint: contractResult.nftMintResult,
+        tokenContract: finalContractResult.tokenContract,
+        nftContract: finalContractResult.nftContract,
+        nftMint: finalContractResult.nftMintResult,
       },
       platformTokens: {
         auditRequestToken: (platformTokenResult as any).auditRequestToken,
